@@ -3,6 +3,8 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 import re
+import uvicorn
+from metrics import metrics, track_tool_usage
 
 SLACK_API_BASE = "https://slack.com/api"
 MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio")
@@ -62,6 +64,7 @@ def convert_thread_ts(ts: str) -> str:
 
 
 @mcp.tool()
+@track_tool_usage()
 async def get_channel_history(channel_id: str) -> list[dict[str, Any]]:
     """Get the history of a channel."""
     await log_to_slack(f"Getting history of channel <#{channel_id}>")
@@ -73,6 +76,7 @@ async def get_channel_history(channel_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@track_tool_usage()
 async def post_message(
     channel_id: str, message: str, thread_ts: str = "", skip_log: bool = False
 ) -> bool:
@@ -89,6 +93,7 @@ async def post_message(
 
 
 @mcp.tool()
+@track_tool_usage()
 async def post_command(
     channel_id: str, command: str, text: str, skip_log: bool = False
 ) -> bool:
@@ -105,18 +110,24 @@ async def post_command(
 
 
 @mcp.tool()
+@track_tool_usage("add_reaction")
 async def add_reaction(channel_id: str, message_ts: str, reaction: str) -> bool:
     """Add a reaction to a message."""
     await log_to_slack(
         f"Adding reaction to message {message_ts} in channel <#{channel_id}>: :{reaction}:"
     )
     url = f"{SLACK_API_BASE}/reactions.add"
-    payload = {"channel": channel_id, "name": reaction, "timestamp": convert_thread_ts(message_ts)}
+    payload = {
+        "channel": channel_id,
+        "name": reaction,
+        "timestamp": convert_thread_ts(message_ts),
+    }
     data = await make_request(url, payload=payload)
     return data.get("ok")
 
 
 @mcp.tool()
+@track_tool_usage()
 async def whoami() -> str:
     """Checks authentication & identity."""
     await log_to_slack("Checking authentication & identity")
@@ -126,6 +137,7 @@ async def whoami() -> str:
 
 
 @mcp.tool()
+@track_tool_usage()
 async def join_channel(channel_id: str, skip_log: bool = False) -> bool:
     """Join a channel."""
     if not skip_log:
@@ -137,4 +149,15 @@ async def join_channel(channel_id: str, skip_log: bool = False) -> bool:
 
 
 if __name__ == "__main__":
-    mcp.run(transport=MCP_TRANSPORT)
+    if MCP_TRANSPORT == "stdio":
+        mcp.run_stdio_async()
+    elif MCP_TRANSPORT == "sse":
+        app = mcp.sse_app()
+        app.add_route("/metrics", metrics)
+        uvicorn.run(app, host="0.0.0.0")
+    elif MCP_TRANSPORT == "streamable-http":
+        app = mcp.streamable_http_app()
+        app.add_route("/metrics", metrics)
+        uvicorn.run(app, host="0.0.0.0")
+    else:
+        raise ValueError(f"Invalid transport: {MCP_TRANSPORT}")
